@@ -67,25 +67,41 @@ def verify_firebase_token(authorization: Optional[str]) -> str:
         raise HTTPException(status_code=401, detail="جلسة الدخول غير صالحة، سجّل دخول من جديد")
 
 
+@app.get("/api/packages")
+def api_packages_list():
+    """
+    قائمة الكتل (packages) المتاحة للتحميل - بديل عن ملف Google Drive
+    القديم المعطل. بيقرا من packages/packages.json (ملف بسيط، بدون حماية
+    لأنه بس أسماء ووصف، مو محتوى فعلي).
+    """
+    manifest_path = PACKAGES_DIR / "packages.json"
+    if not manifest_path.exists():
+        return []
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 @app.get("/api/packages/{package_id}/download")
 def download_package(package_id: str, authorization: Optional[str] = Header(None)):
     """
-    تحميل ملف مادة (.db) - محمي: لازم تسجيل دخول فعلي (Firebase ID Token)
-    قبل ما يوصل الملف. الملفات نفسها موجودة جوا مجلد packages/ بنفس الكود.
+    تحميل ملف مادة (.zip يحتوي .db بداخله) - محمي: لازم تسجيل دخول فعلي
+    (Firebase ID Token) قبل ما يوصل الملف. الملفات نفسها موجودة جوا مجلد
+    packages/ بنفس الكود، بصيغة .zip (نفس الصيغة يلي تطبيق الأندرويد
+    يتوقعها ويفك ضغطها لحاله).
     """
     verify_firebase_token(authorization)  # بيرمي 401 تلقائياً لو مش صالح
 
     # حماية بسيطة من محاولة الخروج عن مجلد packages عبر أسماء ملفات ملغومة
     safe_name = os.path.basename(package_id)
-    file_path = PACKAGES_DIR / f"{safe_name}.db"
+    file_path = PACKAGES_DIR / f"{safe_name}.zip"
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="المادة غير موجودة")
 
     return FileResponse(
         path=str(file_path),
-        media_type="application/octet-stream",
-        filename=f"{safe_name}.db",
+        media_type="application/zip",
+        filename=f"{safe_name}.zip",
     )
 
 
