@@ -16,12 +16,20 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from firebase_admin import auth as firebase_auth
 from firebase_admin import credentials
+from pydantic import BaseModel
 
+import auth_store
 import db
 
 # مجلد ملفات المواد (.db) الجاهزة للتحميل من التطبيق. لازم يكون هون بنفس
 # مستودع الكود (git) عشان ما ينمسح لما Render يعيد التشغيل (ephemeral filesystem).
 PACKAGES_DIR = Path(__file__).parent / "packages"
+
+# مجلد إصدار التطبيق نفسه (APK) - نفس فكرة PACKAGES_DIR تماماً: لازم يكون
+# بنفس مستودع الكود، وكل إصدار جديد بينحط هون باسم latest.apk (استبدال الملف
+# القديم). هيك التطبيق ينزّل التحديث من داخله مباشرة بدل تيليجرام/متصفح خارجي،
+# فما يضل أي ملف تنزيل ظاهر بمجلد التنزيلات العام للجهاز.
+APP_RELEASE_DIR = Path(__file__).parent / "app_release"
 
 # تهيئة Firebase Admin مرة وحدة بس، من متغير بيئة (Environment Variable)
 # اسمه FIREBASE_SERVICE_ACCOUNT_JSON يحتوي محتوى ملف مفتاح الخدمة كامل كنص JSON.
@@ -65,6 +73,76 @@ def verify_firebase_token(authorization: Optional[str]) -> str:
         return decoded["uid"]
     except Exception:
         raise HTTPException(status_code=401, detail="جلسة الدخول غير صالحة، سجّل دخول من جديد")
+
+
+class DeviceLoginBody(BaseModel):
+    device_id: str
+    username: str
+
+
+@app.post("/api/auth/device-login")
+def api_device_login(body: DeviceLoginBody):
+    """
+    تسجيل دخول/تسجيل حساب جديد بدون أي كلمة سر - الاعتماد الكامل على
+    device_id (معرّف الجهاز الفريد المُولَّد من تطبيق الأندرويد).
+
+    - جهاز جديد كلياً => بينشئ حساب باسم username المُرسَل ويرجع توكن.
+    - جهاز مسجّل مسبقاً بنفس الاسم => بيرجع توكن لنفس الحساب القديم.
+    - جهاز مسجّل مسبقاً باسم مختلف عن يلي انبعت => 403 (حماية من انتحال
+      حساب شخص تاني بمجرد معرفة اسمه).
+    """
+    try:
+        result = auth_store.login_or_register(body.device_id, body.username)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if result.get("error") == "username_mismatch":
+        raise HTTPException(
+            status_code=403,
+            detail="هذا الجهاز مسجّل مسبقاً باسم مختلف عن الاسم المدخل",
+        )
+    return result
+
+
+def _verify_admin(x_admin_key: Optional[str]) -> None:
+    """حماية بسيطة بمفتاح ثابت للوحة التحكم - مش Firebase ID token لأنو
+    هاد استخدام إداري بس (إنت شخصياً)، مش جزء من تدفق تطبيق الطلاب."""
+    expected = os.environ.get("ADMIN_API_KEY")
+    if not expected or x_admin_key != expected:
+        raise HTTPException(status_code=401, detail="غير مصرح")
+
+
+@app.get("/api/admin/accounts")
+def api_admin_list_accounts(x_admin_key: Optional[str] = Header(None)):
+    """كل الحسابات: الاسم + device_id + تاريخ التسجيل."""
+    _verify_admin(x_admin_key)
+    return auth_store.list_accounts()
+
+
+@app.delete("/api/admin/accounts/{uid}")
+def api_admin_delete_account(uid: str, x_admin_key: Optional[str] = Header(None)):
+    """حذف حساب بالكامل - نفس الجهاز إذا رجع سجّل بعدها بيصير كأنه جهاز
+    جديد تماماً، وبيقدر يحط أي اسم من الصفر."""
+    _verify_admin(x_admin_key)
+    auth_store.delete_account(uid)
+    return {"status": "deleted"}
+
+
+@app.get("/api/app/latest")
+def download_latest_apk():
+    """
+    تحميل آخر إصدار من التطبيق نفسه (APK) - يستخدمها التطبيق داخلياً بدل
+    الاعتماد على رابط تيليجرام خارجي. لا يحتاج تسجيل دخول (المستخدم أصلاً
+    ممكن يكون خارج حسابه ولسا لازم يحدّث التطبيق قبل ما يقدر يدخل).
+    """
+    apk_path = APP_RELEASE_DIR / "latest.apk"
+    if not apk_path.exists():
+        raise HTTPException(status_code=404, detail="لا يوجد إصدار متاح حالياً")
+    return FileResponse(
+        path=str(apk_path),
+        media_type="application/vnd.android.package-archive",
+        filename="QPlus.apk",
+    )
 
 
 @app.get("/api/packages")
