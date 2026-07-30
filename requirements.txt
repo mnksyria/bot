@@ -4,3 +4,4 @@ fastapi==0.115.6
 uvicorn[standard]==0.32.1
 libsql==0.1.11
 firebase-admin==6.6.0
+google-cloud-firestore==2.19.0
